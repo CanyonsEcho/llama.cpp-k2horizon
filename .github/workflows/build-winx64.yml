@@ -1,0 +1,107 @@
+name: Windows x64 Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths: [
+      '.github/workflows/build-cpu.yml',
+      '.github/workflows/build-cmake-pkg.yml',
+      '**/CMakeLists.txt',
+      '**/.cmake',
+      '**/*.h',
+      '**/*.hpp',
+      '**/*.c',
+      '**/*.cpp',
+    ]
+
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths: [
+      '.github/workflows/build-cpu.yml',
+      '.github/workflows/build-cmake-pkg.yml',
+      'ggml/src/ggml-rpc/**',
+      '**/CMakeLists.txt',
+      '**/.cmake',
+      '**/*.h',
+      '**/*.hpp',
+      '**/*.c',
+      '**/*.cpp'
+    ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  GGML_NLOOP: 3
+  GGML_N_THREADS: 1
+  LLAMA_ARG_LOG_COLORS: 1
+  LLAMA_ARG_LOG_PREFIX: 1
+  LLAMA_ARG_LOG_TIMESTAMPS: 1
+
+jobs:
+  windows:
+    name: windows / x64
+    runs-on: windows-2025
+
+    env:
+      OPENBLAS_VERSION: 0.3.23
+      SDE_VERSION: 9.33.0-2024-01-07
+
+    steps:
+      - name: Clone
+        id: checkout
+        uses: actions/checkout@v6
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: cpu-windows-2025-x64
+          variant: ccache
+          evict-old-files: 1d
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+
+      - name: Install Ninja
+        id: install_ninja
+        run: |
+          choco install ninja
+
+      - name: Build
+        id: cmake_build
+        run: |
+          cmake -S . -B build `
+            -G "Ninja Multi-Config" `
+            -D CMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake `
+            -DGGML_NATIVE=OFF `
+            -DGGML_OPENMP_FETCH=ON `
+            -DLLAMA_BUILD_SERVER=ON `
+            -DGGML_RPC=ON `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DLLAMA_BUILD_BORINGSSL=ON
+          cmake --build build --config Release -j ${env:NUMBER_OF_PROCESSORS}
+
+      - name: Test
+        id: cmake_test
+        run: |
+          cd build
+          ctest -L main -C Release --verbose --timeout 900
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-cpu-windows-x64
+          path: build/bin/Release/
+          if-no-files-found: error
+          compression-level: 6
+
+      - name: ccache-clear
+        uses: ./.github/actions/ccache-clear
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          key: cpu-windows-2025-x64
+          older: 5m
+          min: 1
+          dry-run: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master' }}
